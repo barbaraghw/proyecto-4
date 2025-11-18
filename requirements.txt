@@ -1,0 +1,5 @@
+Flask
+SQLAlchemy
+Pillow # Para manejar imágenes con OCR
+pytesseract # Interfaz Python para Tesseract OCR
+python-dotenv # Para manejar variables de entorno (credenciales de correo)
