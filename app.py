@@ -1,182 +1,202 @@
 # app.py
 
-from flask import Flask, request, jsonify, render_template_string
-from dotenv import load_dotenv
-from sqlalchemy.orm import Session
-from os.path import join, dirname, realpath
 import os
+import uuid
+import tempfile
 from datetime import datetime
+from flask import Flask, request, jsonify, redirect, url_for
+from dotenv import load_dotenv
 
-# Importar nuestros módulos
-from database import init_db, get_db, Invoice, STATUS_APROBADO, STATUS_RECHAZADO, STATUS_EN_PROCESO
+# Módulos del Proyecto
+from database import (
+    SessionLocal, 
+    Invoice, 
+    update_invoice_status,
+    STATUS_EN_PROCESO,
+    STATUS_APROBADO,
+    STATUS_RECHAZADO
+)
 from processor import process_invoice_file
-from mailer import send_invoice_notification
+from notification_service import send_approval_email
 
+# Cargar variables de entorno del archivo .env
 load_dotenv()
+
+# Configuración de Flask
 app = Flask(__name__)
-# Inicializar la DB al iniciar la app
-with app.app_context():
-    init_db()
+app.config['UPLOAD_FOLDER'] = 'uploads' # Directorio para guardar archivos subidos
+app.config['ALLOWED_EXTENSIONS'] = {'png', 'jpg', 'jpeg', 'pdf'}
 
-# Directorio para guardar temporalmente las facturas subidas
-UPLOAD_FOLDER = join(dirname(realpath(__file__)), 'uploads')
-os.makedirs(UPLOAD_FOLDER, exist_ok=True)
-app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
+# Asegurar que el directorio de subida exista
+if not os.path.exists(app.config['UPLOAD_FOLDER']):
+    os.makedirs(app.config['UPLOAD_FOLDER'])
 
-# --- Endpoints de la API REST  ---
+def allowed_file(filename):
+    """Verifica que el archivo tenga una extensión permitida."""
+    return '.' in filename and \
+           filename.rsplit('.', 1)[1].lower() in app.config['ALLOWED_EXTENSIONS']
+
+# -------------------------------------------------------------------------
+# ENDPOINT PRINCIPAL: Subida y Procesamiento de Factura (Módulo 4 y Módulo 1)
+# -------------------------------------------------------------------------
 
 @app.route('/api/v1/invoice/upload', methods=['POST'])
 def upload_invoice():
-    """
-    API REST para subida y procesamiento de facturas. 
-    """
     if 'file' not in request.files:
-        return jsonify({"message": "No se encontró la parte del archivo 'file'"}), 400
-
+        return jsonify({"message": "No se encontró el archivo"}), 400
+    
     file = request.files['file']
     if file.filename == '':
-        return jsonify({"message": "Nombre de archivo no seleccionado"}), 400
+        return jsonify({"message": "Nombre de archivo inválido"}), 400
 
-    if file:
-        # 1. Sistema de recepción de archivos [cite: 10]
-        filepath = os.path.join(app.config['UPLOAD_FOLDER'], file.filename)
-        file.save(filepath)
+    if file and allowed_file(file.filename):
+        # 1. Guarda temporalmente el archivo para el OCR
+        temp_file_path = os.path.join(tempfile.gettempdir(), str(uuid.uuid4()) + file.filename)
+        file.save(temp_file_path)
 
-        # 2. Procesamiento Inteligente [cite: 8]
-        processing_result = process_invoice_file(filepath)
-        extracted_data = processing_result['data']
-        extraction_log = processing_result['log']
+        # 2. Procesa la factura (Llamada al Módulo 1: OCR y Extracción)
+        processing_result = process_invoice_file(temp_file_path)
         
-        db: Session = next(get_db())
-        
-        # Validación de duplicidad (por número de factura)
-        existing_invoice = db.query(Invoice).filter(Invoice.invoice_number == extracted_data.get('invoice_number')).first()
-        if existing_invoice:
-            # Manejo de errores - Factura duplicada [cite: 76, 78]
+        # ===================================================================
+        # LÍNEAS DE DEBUGGING AGREGADAS: Muestra el log de extracción en la consola
+        # ===================================================================
+        print("\n=======================================================")
+        print("    DIAGNÓSTICO DETALLADO DE OCR Y EXTRACCIÓN (Módulo 1)")
+        print("=======================================================")
+        print(processing_result.get("log", "Log de procesamiento no disponible."))
+        print("=======================================================\n")
+        # ===================================================================
+
+        extracted_data = processing_result.get("data", {})
+        extraction_error = processing_result.get("error")
+
+        # 3. Manejo de Errores Críticos (Fallo de OCR)
+        if extraction_error:
+            os.remove(temp_file_path)
             return jsonify({
-                "message": "Factura ya existe en la base de datos",
-                "invoice_id": existing_invoice.id,
-                "status": existing_invoice.status
-            }), 409
+                "message": "Fallo al procesar el archivo por error de OCR.",
+                "error": extraction_error
+            }), 500
 
-        # 3. Almacenamiento y Gestión de Estados [cite: 22, 47]
+        # 4. Inicia la sesión de DB (Módulo 2)
+        db = SessionLocal()
+        
         try:
-            # Crear nueva instancia de la factura con los datos extraídos
+            invoice_number = extracted_data.get("invoice_number")
+
+            # 5. Verificación de duplicados
+            existing_invoice = db.query(Invoice).filter(Invoice.invoice_number == invoice_number).first()
+            if existing_invoice:
+                db.close()
+                os.remove(temp_file_path)
+                return jsonify({
+                    "message": f"La factura con número {invoice_number} ya existe en la base de datos.",
+                    "status": existing_invoice.status
+                }), 409 # Código 409 Conflict
+
+            # 6. Creación del nuevo registro en la DB
             new_invoice = Invoice(
-                provider_name=extracted_data.get('provider_name'),
-                invoice_number=extracted_data.get('invoice_number'),
-                issue_date=extracted_data.get('issue_date'),
-                total_amount=extracted_data.get('total_amount'),
-                taxes=extracted_data.get('taxes'),
-                due_date=extracted_data.get('due_date'),
-                status=extracted_data.get('status', STATUS_RECHAZADO), # Fallback si falla la validación
-                extraction_log=extraction_log
+                invoice_number=invoice_number,
+                provider_name=extracted_data.get("provider_name"),
+                issue_date=extracted_data.get("issue_date"),
+                due_date=extracted_data.get("due_date"),
+                total_amount=extracted_data.get("total_amount"),
+                taxes=extracted_data.get("taxes"),
+                status=extracted_data.get("status", STATUS_RECHAZADO), # Usa el estado determinado por el Módulo 1
+                extraction_log=processing_result.get("log")
             )
-            
             db.add(new_invoice)
             db.commit()
             db.refresh(new_invoice)
-
-            # 4. Notificación y Flujo de Trabajo
-            if new_invoice.status == STATUS_EN_PROCESO:
-                # Se asume un email de revisor simple por simplicidad
-                reviewer_email = os.getenv("MAIL_USERNAME") 
-                send_invoice_notification(new_invoice, reviewer_email)
             
+            # 7. Si el estado es "En Proceso", enviar notificación (Módulo 3)
+            if new_invoice.status == STATUS_EN_PROCESO:
+                send_approval_email(new_invoice)
+
+            # 8. Mueve el archivo a la carpeta final si fue procesado (opcional, para auditoría)
+            # Aquí podrías renombrar el archivo y moverlo a app.config['UPLOAD_FOLDER']
+            os.remove(temp_file_path) # Eliminamos el archivo temporal por simplicidad
+
             return jsonify({
                 "message": "Factura subida y procesada correctamente",
                 "invoice_id": new_invoice.id,
                 "status": new_invoice.status,
-                "extracted_data": extracted_data
+                "extracted_data": {
+                    k: (v.isoformat() if isinstance(v, datetime) else v) 
+                    for k, v in extracted_data.items()
+                }
             }), 200
 
         except Exception as e:
             db.rollback()
-            # Manejo elegante de fallos [cite: 76, 78]
-            return jsonify({"message": f"Error interno al guardar la factura: {e}", "log": extraction_log}), 500
+            print(f"Error interno al manejar la DB o notificar: {e}")
+            if os.path.exists(temp_file_path):
+                os.remove(temp_file_path)
+            return jsonify({"message": "Error interno del servidor", "error": str(e)}), 500
+        finally:
+            db.close()
+    
+    return jsonify({"message": "Tipo de archivo no permitido"}), 400
+
+# -------------------------------------------------------------------------
+# ENDPOINT DE WEBHOOK: Respuesta del Correo (Módulo 3)
+# -------------------------------------------------------------------------
+
+@app.route('/api/v1/invoice/webhook', methods=['GET'])
+def webhook_handler():
+    # Obtiene parámetros de la URL enviados por el botón del correo
+    invoice_id = request.args.get('invoice_id', type=int)
+    action = request.args.get('action') # 'approve' o 'reject'
+    
+    if not invoice_id or action not in ['approve', 'reject']:
+        return "Parámetros inválidos", 400
+    
+    new_status = STATUS_APROBADO if action == 'approve' else STATUS_RECHAZADO
+    justification = f"Decisión tomada por webhook/email: {new_status}"
+    
+    db = SessionLocal()
+    try:
+        updated_invoice = update_invoice_status(db, invoice_id, new_status, justification)
+        
+        if updated_invoice:
+            print(f"\n--- WEBHOOK ACTIVADO ---")
+            print(f"Factura ID {invoice_id} ha sido marcada como: {new_status}")
+            print("------------------------\n")
+            # Redirige a una página de confirmación simple
+            return f"<h1>Confirmación: Factura {invoice_id} {new_status}</h1><p>El proceso ha finalizado correctamente.</p>", 200
+        else:
+            return "Factura no encontrada", 404
+    except Exception as e:
+        db.rollback()
+        return f"Error al actualizar la base de datos: {e}", 500
+    finally:
+        db.close()
+
+
+# -------------------------------------------------------------------------
+# ENDPOINT DE CONSULTA DE ESTADO (Módulo 2)
+# -------------------------------------------------------------------------
 
 @app.route('/api/v1/invoice/<int:invoice_id>/status', methods=['GET'])
 def get_invoice_status(invoice_id):
-    """
-    Endpoint para consulta de estado y historial. [cite: 45]
-    """
-    db: Session = next(get_db())
-    invoice = db.query(Invoice).get(invoice_id)
-
-    if not invoice:
-        return jsonify({"message": "Factura no encontrada"}), 404
-
-    # Registro de historial (simple, solo datos de la tabla Invoice) [cite: 58]
-    return jsonify({
-        "invoice_id": invoice.id,
-        "provider_name": invoice.provider_name,
-        "invoice_number": invoice.invoice_number,
-        "current_status": invoice.status,
-        "last_updated": invoice.last_updated.isoformat(),
-        "decision_justification": invoice.decision_justification,
-        "extraction_log_snippet": invoice.extraction_log[:100] + "..." 
-    }), 200
-
-# --- Webhooks para Procesar Decisiones  ---
-
-@app.route('/api/v1/webhook/invoice/<int:invoice_id>/<string:action>', methods=['GET', 'POST'])
-def process_webhook_decision(invoice_id, action):
-    """
-    Mecanismo de procesamiento de respuestas (webhooks) para 'Aprobar'.
-    El 'GET' se usa para el enlace directo del correo. [cite: 35]
-    """
-    db: Session = next(get_db())
-    invoice = db.query(Invoice).get(invoice_id)
-    
-    if not invoice:
-        return f"Factura ID {invoice_id} no encontrada.", 404
-
-    if action == 'approve':
-        # 1. Correcta transición entre estados [cite: 56]
-        if invoice.status != STATUS_APROBADO:
-            invoice.status = STATUS_APROBADO
-            invoice.decision_justification = "Aprobado vía correo electrónico interactivo."
-            db.commit()
-            # 2. Sistema de registro de auditoría [cite: 48]
-            return "✅ **Factura APROBADA con éxito!** La base de datos ha sido actualizada.", 200
+    db = SessionLocal()
+    try:
+        invoice = db.query(Invoice).filter(Invoice.id == invoice_id).first()
+        if invoice:
+            return jsonify({
+                "invoice_id": invoice.id,
+                "invoice_number": invoice.invoice_number,
+                "current_status": invoice.status,
+                "total_amount": invoice.total_amount,
+                "last_updated": invoice.last_updated.isoformat()
+            }), 200
         else:
-            return "Factura ya estaba APROBADA.", 200
-            
-    elif action == 'reject':
-        # Este endpoint 'reject' es usado si el usuario envía comentarios desde el formulario
-        justification = request.args.get('comment') or request.form.get('comment')
-        
-        if not justification:
-            return "❌ Rechazo fallido: Justificación (comment) requerida.", 400
-
-        if invoice.status != STATUS_RECHAZADO:
-            invoice.status = STATUS_RECHAZADO
-            invoice.decision_justification = justification
-            db.commit()
-            return f"❌ **Factura RECHAZADA con éxito!** Justificación registrada: {justification}", 200
-        else:
-            return "Factura ya estaba RECHAZADA.", 200
-            
-    else:
-        return "Acción no válida.", 400
-
-@app.route('/api/v1/webhook/reject_form/<int:invoice_id>', methods=['GET'])
-def reject_form(invoice_id):
-    """
-    Simulación de formulario integrado para comentarios de rechazo. [cite: 40]
-    """
-    # HTML simple para capturar comentarios para rechazos [cite: 34]
-    form_html = f"""
-    <h2>Rechazar Factura #{invoice_id}</h2>
-    <p>Por favor, ingrese el comentario/justificación del rechazo.</p>
-    <form action="{os.getenv('BASE_URL')}/api/v1/webhook/invoice/{invoice_id}/reject" method="GET">
-        <textarea name="comment" rows="5" cols="50" required placeholder="Escribe tu justificación aquí..."></textarea><br><br>
-        <button type="submit">Enviar Rechazo</button>
-    </form>
-    """
-    return render_template_string(form_html)
+            return jsonify({"message": "Factura no encontrada"}), 404
+    finally:
+        db.close()
 
 
 if __name__ == '__main__':
-    # Usar un puerto diferente si es necesario
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    # Usar el puerto del .env o 5000 por defecto
+    port = int(os.environ.get("FLASK_RUN_PORT", 5000))
+    app.run(debug=True, port=port)
