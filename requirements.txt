@@ -1,5 +1,22 @@
 Flask
-SQLAlchemy
-Pillow # Para manejar imágenes con OCR
-pytesseract # Interfaz Python para Tesseract OCR
-python-dotenv # Para manejar variables de entorno (credenciales de correo)
+pytesseract
+Pillow
+pdf2image
+python-dotenv
+yagmail
+
+El sistema utiliza herramientas de software externas que no pueden ser instaladas a través de pip y que son esenciales para el funcionamiento del Módulo 1 (OCR y Procesamiento de PDFs).
+
+1. Tesseract OCR (Módulo de Reconocimiento de Texto)
+Propósito: Proporciona la capacidad de convertir imágenes y PDFs procesados en texto legible.
+
+Acción Requerida: Instalar el motor Tesseract OCR en su sistema operativo Windows.
+
+Configuración: Debe especificar la ruta absoluta al ejecutable de Tesseract en su archivo processor.py para que la librería pytesseract pueda invocarlo correctamente:
+
+2. Poppler (Módulo de Conversión de PDFs)
+Propósito: Es el motor utilizado por la librería pdf2image para rasterizar y convertir archivos PDF a imágenes, las cuales son luego procesadas por Tesseract.
+
+Acción Requerida: Descargar una versión compilada de Poppler para Windows.
+
+Configuración: Debe actualizar la variable POPPLER_PATH en su archivo processor.py para que apunte al subdirectorio bin de la instalación de Poppler:
