@@ -1,0 +1,114 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Gestión de Facturas - Upload</title>
+    <style>
+        body {
+            font-family: Arial, sans-serif;
+            background-color: #f4f4f4;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            height: 100vh;
+            margin: 0;
+        }
+        .container {
+            background: #fff;
+            padding: 30px;
+            border-radius: 8px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.1);
+            width: 90%;
+            max-width: 450px;
+            text-align: center;
+        }
+        h2 {
+            color: #333;
+            margin-bottom: 20px;
+        }
+        input[type="file"] {
+            display: block;
+            margin: 0 auto 20px auto;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 4px;
+            width: 100%;
+            box-sizing: border-box;
+        }
+        button {
+            background-color: #007bff;
+            color: white;
+            padding: 10px 20px;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 16px;
+            transition: background-color 0.3s;
+        }
+        button:hover {
+            background-color: #0056b3;
+        }
+        #result {
+            margin-top: 20px;
+            padding: 10px;
+            border-radius: 4px;
+            text-align: left;
+            word-wrap: break-word; /* Para manejar JSONs largos */
+            background-color: #eee;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h2>🧾 Subir Factura para Procesamiento</h2>
+        
+        <form id="uploadForm" enctype="multipart/form-data">
+            <input type="file" name="file" id="fileInput" accept=".pdf, .png, .jpg, .jpeg" required>
+            <button type="submit">Procesar Factura</button>
+        </form>
+
+        <div id="result">
+            Esperando subida...
+        </div>
+    </div>
+
+    <script>
+        document.getElementById('uploadForm').addEventListener('submit', async function(e) {
+            e.preventDefault();
+            const resultDiv = document.getElementById('result');
+            resultDiv.innerHTML = "Procesando, por favor espere...";
+
+            const formData = new FormData();
+            const fileInput = document.getElementById('fileInput');
+            
+            if (fileInput.files.length === 0) {
+                resultDiv.innerHTML = 'Selecciona un archivo.';
+                return;
+            }
+
+            formData.append('file', fileInput.files[0]);
+
+            try {
+                // Llama al mismo endpoint que usabas en Postman
+                const response = await fetch('/api/v1/invoice/upload', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                const data = await response.json();
+                
+                // Muestra la respuesta formateada
+                resultDiv.innerHTML = `
+                    <strong>Respuesta del Servidor (${response.status}):</strong><br>
+                    <pre>${JSON.stringify(data, null, 2)}</pre>
+                `;
+
+            } catch (error) {
+                resultDiv.innerHTML = '<strong>Error de Conexión:</strong> El servidor Flask no está corriendo o hay un problema de red.';
+                console.error('Error:', error);
+            }
+        });
+    </script>
+</body>
+</html>

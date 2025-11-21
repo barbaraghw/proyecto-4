@@ -4,7 +4,7 @@ import os
 import uuid
 import tempfile
 from datetime import datetime
-from flask import Flask, request, jsonify, redirect, url_for
+from flask import Flask, request, jsonify, redirect, url_for, render_template
 from dotenv import load_dotenv
 
 # Módulos del Proyecto
@@ -39,6 +39,10 @@ def allowed_file(filename):
 # -------------------------------------------------------------------------
 # ENDPOINT PRINCIPAL: Subida y Procesamiento de Factura (Módulo 4 y Módulo 1)
 # -------------------------------------------------------------------------
+@app.route('/', methods=['GET'])
+def index():
+    """Sirve la plantilla HTML para subir archivos."""
+    return render_template('index.html')
 
 @app.route('/api/v1/invoice/upload', methods=['POST'])
 def upload_invoice():

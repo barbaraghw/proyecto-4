@@ -69,7 +69,7 @@ def update_invoice_status(db, invoice_id, new_status, justification=None):
         # Solo actualiza si hay cambio de estado
         if invoice.status != new_status:
             invoice.status = new_status
-            invoice.last_updated = datetime.utcnow() # Registra el timestamp del cambio
+            invoice.last_updated = datetime.now() # Registra el timestamp del cambio
             if justification:
                 invoice.decision_justification = justification
             
